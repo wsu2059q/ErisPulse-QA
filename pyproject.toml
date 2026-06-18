@@ -1,0 +1,24 @@
+[project]
+name = "ErisPulse-QA"
+version = "1.0.3"
+description = "ErisPulse 官方文档问答模块：基于向量检索 + LLM 回答 ErisPulse 开发问题"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "wsu2059q" }
+]
+dependencies = []
+
+[project.urls]
+"homepage" = "https://github.com/wsu2059q/ErisPulse-QA"
+
+[project.entry-points."erispulse.module"]
+"QA" = "ErisPulse_QA:Main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ErisPulse_QA*"]
