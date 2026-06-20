@@ -1,7 +1,7 @@
 [project]
 name = "ErisPulse-QA"
-version = "1.0.3"
-description = "ErisPulse 官方文档问答模块：基于向量检索 + LLM 回答 ErisPulse 开发问题"
+version = "1.1.0"
+description = "ErisPulse 官方文档问答模块：基于文档检索 + 源码查看 + LLM 回答 ErisPulse 开发问题"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

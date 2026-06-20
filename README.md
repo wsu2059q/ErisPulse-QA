@@ -2,14 +2,18 @@
 
 > 内部项目，仅开源，不发布到模块商店。供 ErisPulse 官方文档问答使用。
 
-ErisPulse 官方文档问答模块
+ErisPulse 官方文档问答模块，支持文档检索和源码查看。
 
 ## 特点
 
-- **Agent 工具循环**：LLM 先看到完整文档索引，再自主调用工具收集信息
+- **Agent 工具循环**：LLM 先看到完整文档索引和源码文件列表，再自主调用工具收集信息
   - `search_docs(query, top_k)` —— 本地 BM25 检索官方文档片段
   - `read_document(doc_path)` —— 读取某篇文档完整内容
   - `list_documents()` —— 列出所有文档
+  - `list_source_files()` —— 列出所有可用源码文件
+  - `read_source_file(file_path)` —— 读取指定源码文件内容
+- **版本追踪**：自动获取并显示 ErisPulse 版本信息，确保回答基于正确版本
+- **源码集成**：更新知识库时自动下载源码，AI 可查看实际实现细节
 - **流式回答**：云湖平台逐 token 推送，思考过程实时可见；其余平台自动降级
 - **平台自适应**：自动检测平台能力（Markdown / 编辑 / 流式），选择最优回复方式
 - **多轮上下文**：回复机器人的消息即可延续对话，自动构建上下文链
@@ -71,11 +75,12 @@ model = "Qwen/Qwen2.5-72B-Instruct"
 ### 管理员命令
 
 ```
-/更新文档缓存    # 重新拉取文档并重建知识库
+/更新文档缓存    # 重新拉取文档和源码并重建知识库
 /qa状态          # 查看知识库状态
 ```
 
 > 首次使用必须先执行一次 `/更新文档缓存` 构建知识库。
+> 更新过程会：1. 获取 ErisPulse 版本信息；2. 下载官方文档；3. 下载源码文件；4. 构建索引。
 
 ### 多轮对话
 
@@ -105,7 +110,12 @@ model = "Qwen/Qwen2.5-72B-Instruct"
 ```
 qa-cache/
 ├── qa-index-zh-CN.json   # 文档索引 + 分块 + BM25 索引
-└── docs/                 # 每篇文档的完整 Markdown
+├── docs/                 # 每篇文档的完整 Markdown
+└── src/                  # ErisPulse 源码文件
+    ├── __init__.py
+    ├── Core/
+    ├── finders/
+    └── ...
 ```
 
 ## 模块结构
@@ -115,11 +125,11 @@ ErisPulse_QA/
 ├── __init__.py
 ├── Core.py            # 模块入口：生命周期、命令、触发、上下文管理
 ├── config.py          # 配置加载与默认值
-├── docs_loader.py     # 从 GitHub 拉取文档（反代→直连 + 熔断）
+├── docs_loader.py     # 从 GitHub 拉取文档和源码（反代→直连 + 熔断）
 ├── chunker.py         # Markdown 语义分块
 ├── bm25.py            # 本地 BM25 检索
-├── knowledge_base.py  # 知识库：索引 + 全文 + 检索
-├── llm.py             # LLM Agent：function-calling
+├── knowledge_base.py  # 知识库：索引 + 全文 + 检索 + 源码查看
+├── llm.py             # LLM Agent：function-calling + 版本信息
 └── reply.py           # 渐进式回复：流式 / 编辑 / 降级
 ```
 

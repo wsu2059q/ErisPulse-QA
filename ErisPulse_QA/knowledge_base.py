@@ -35,6 +35,7 @@ class KnowledgeBase:
         self.cache_dir = Path(cache_dir) if cache_dir else _default_cache_dir()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.docs_dir = self.cache_dir / "docs"
+        self.src_dir = self.cache_dir / "src"
 
         lang = config.get("language", "zh-CN")
         self.cache_file = self.cache_dir / f"qa-index-{lang}.json"
@@ -46,6 +47,10 @@ class KnowledgeBase:
         self.bm25: Optional[BM25Index] = None
         self.stats: dict = {}
         self.built_at: float = 0.0
+
+        # 源码相关
+        self.source_files: List[str] = []
+        self.source_version: str = "unknown"
 
         self._lock = asyncio.Lock()
         self._ready = False
@@ -65,6 +70,8 @@ class KnowledgeBase:
             "built_at": self.built_at,
             "stats": self.stats,
             "cache_file": str(self.cache_file),
+            "source_version": self.source_version,
+            "source_file_count": len(self.source_files),
         }
 
     def doc_index_text(self) -> str:
@@ -84,6 +91,16 @@ class KnowledgeBase:
             suffix = f"（{subgroup}）" if subgroup else ""
             lines.append(f"- {title}{suffix} → {path}")
         return "\n".join(lines).strip()
+
+    def source_files_text(self) -> str:
+        """生成供 system prompt 使用的「源码文件列表」概览（仅文件路径）。"""
+        if not self.source_files:
+            return "（暂无源码）"
+        # 按目录结构分组，但只显示文件路径
+        lines = []
+        for file_path in sorted(self.source_files):
+            lines.append(f"- {file_path}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------ #
     # BM25 索引构建
@@ -237,5 +254,61 @@ class KnowledgeBase:
                 content[: self.max_doc_chars]
                 + f"\n\n…（文档过长，已截断至 {self.max_doc_chars} 字符；"
                 "如需细节请用 search_docs 工具检索具体段落）"
+            )
+        return content
+
+    # ------------------------------------------------------------------ #
+    # 源码相关工具
+    # ------------------------------------------------------------------ #
+    def set_source_info(self, version: str, files: List[str]):
+        """设置源码版本和文件列表。"""
+        self.source_version = version
+        self.source_files = files
+        self.logger.info(f"源码信息已更新: 版本 {version}, {len(files)} 个文件")
+
+    def list_source_files(self) -> str:
+        """列出所有可用的源码文件路径。"""
+        if not self.source_files:
+            return "当前没有可用的源码文件。"
+        return self.source_files_text()
+
+    def read_source_file(self, file_path: str) -> str:
+        """读取指定的源码文件内容。"""
+        if not self.src_dir.exists():
+            return "源码目录不存在。"
+
+        # 清理路径，移除可能的 .py 扩展名重复
+        clean_path = file_path
+        if clean_path.endswith(".py.py"):
+            clean_path = clean_path[:-3]
+
+        target = self.src_dir / clean_path
+
+        # 防御目录穿越
+        try:
+            target.resolve().relative_to(self.src_dir.resolve())
+        except Exception:
+            return f"非法的源码路径: {file_path}"
+
+        if not target.exists() or not target.is_file():
+            # 模糊匹配文件名兜底
+            name = Path(clean_path).name
+            candidates = list(self.src_dir.rglob(name))
+            if candidates:
+                target = candidates[0]
+            else:
+                return f"未找到源码文件: {file_path}"
+
+        try:
+            content = target.read_text(encoding="utf-8")
+        except Exception as e:
+            return f"读取源码文件失败: {e}"
+
+        # 源码文件可能很长，设置更大的限制
+        max_source_chars = self.max_doc_chars * 3  # 源码允许更长
+        if len(content) > max_source_chars:
+            content = (
+                content[:max_source_chars]
+                + f"\n\n…（源码文件过长，已截断至 {max_source_chars} 字符）"
             )
         return content

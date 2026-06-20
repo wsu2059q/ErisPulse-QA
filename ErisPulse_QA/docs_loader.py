@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 from .chunker import Chunk, chunk_markdown
@@ -43,6 +44,7 @@ class DocsLoader:
         self.language = config.get("language", "zh-CN")
         self.chunk_size = int(config.get("chunk_size", 800) or 800)
         self.chunk_overlap = int(config.get("chunk_overlap", 100) or 100)
+        self.version = None  # ErisPulse版本信息
 
         # 构建源列表：反代（按配置顺序）+ 直连
         self._sources: List[dict] = []
@@ -105,9 +107,10 @@ class DocsLoader:
     # ------------------------------------------------------------------ #
     async def _fetch_text(self, relative_path: str) -> str:
         raw_url = _raw_base(self.repo, self.branch) + relative_path
-        last_err = None
+        last_err = "未知错误"
         for source in self._ordered_sources():
             url = source["prefix"] + raw_url
+            last_err = "未知错误"  # 为每个源重置错误信息
             for attempt in range(self._per_source_retries):
                 try:
                     async with self._sem:
@@ -225,6 +228,260 @@ class DocsLoader:
             f"文档加载完成: {ok}/{total} 篇, {len(chunks)} 个块, 失败 {len(failed)}"
         )
         return doc_index, full_docs, chunks, stats
+
+    async def get_version(self) -> str:
+        """从远程 pyproject.toml 获取 ErisPulse 版本信息。"""
+        try:
+            content = await self._fetch_text("pyproject.toml")
+            # 简单解析版本信息
+            for line in content.split("\n"):
+                line = line.strip()
+                if line.startswith("version ="):
+                    version = line.split("=")[1].strip().strip('"').strip("'")
+                    self.version = version
+                    self.logger.info(f"获取到 ErisPulse 版本: {version}")
+                    return version
+            return "unknown"
+        except Exception as e:
+            self.logger.warning(f"获取版本信息失败: {e}")
+            return "unknown"
+
+    async def download_source_code(
+        self, src_dir: Path, on_progress=None
+    ) -> Dict[str, list]:
+        """下载 ErisPulse 的 src 目录结构。
+
+        返回: {"language": "python", "files": ["path/to/file1.py", "path/to/file2.py", ...]}
+        """
+        if self.version is None:
+            await self.get_version()
+
+        file_paths = []
+
+        # 先尝试获取 src 目录的文件列表（通过 API 递归）
+        try:
+            # 使用 GitHub API 递归获取目录结构
+            api_path = f"repos/{self.repo}/contents/src/ErisPulse"
+            last_err = "未知错误"
+            for source in self._ordered_sources():
+                last_err = "未知错误"  # 重置错误信息
+                for attempt in range(self._per_source_retries):
+                    try:
+                        # 递归获取所有 Python 文件
+                        files = await self._collect_files_from_github_api_recursive(
+                            api_path, source
+                        )
+                        if files:
+                            file_paths.extend(files)
+                            self._on_success(source["name"])
+                            self.logger.info(f"通过 API 获取到 {len(files)} 个源码文件")
+                            break
+                        last_err = "API 返回空文件列表"
+                    except Exception as e:
+                        last_err = f"GitHub API 请求失败: {e}"
+                    if attempt < self._per_source_retries - 1:
+                        await asyncio.sleep(self._retry_backoff)
+                else:
+                    self._on_failure(source["name"], last_err or "未知错误")
+
+        except Exception as e:
+            self.logger.warning(f"通过 API 获取文件列表失败: {e}，使用备用方法")
+
+        # 备用方法：手动指定可能存在的文件路径（基于实际ErisPulse结构）
+        if not file_paths:
+            self.logger.info("使用预定义文件列表作为备用")
+            file_paths = [
+                # 根目录
+                "src/ErisPulse/__init__.py",
+                "src/ErisPulse/__main__.py",
+                "src/ErisPulse/sdk.py",
+                # CLI 模块
+                "src/ErisPulse/CLI/__init__.py",
+                "src/ErisPulse/CLI/base.py",
+                "src/ErisPulse/CLI/cli.py",
+                "src/ErisPulse/CLI/console.py",
+                "src/ErisPulse/CLI/registry.py",
+                "src/ErisPulse/CLI/commands/__init__.py",
+                "src/ErisPulse/CLI/commands/create.py",
+                "src/ErisPulse/CLI/commands/init.py",
+                "src/ErisPulse/CLI/commands/install.py",
+                "src/ErisPulse/CLI/commands/language.py",
+                "src/ErisPulse/CLI/commands/list.py",
+                "src/ErisPulse/CLI/commands/list_remote.py",
+                "src/ErisPulse/CLI/commands/run.py",
+                "src/ErisPulse/CLI/commands/self_update.py",
+                "src/ErisPulse/CLI/commands/uninstall.py",
+                "src/ErisPulse/CLI/commands/upgrade.py",
+                "src/ErisPulse/CLI/i18n/__init__.py",
+                "src/ErisPulse/CLI/i18n/locales/__init__.py",
+                "src/ErisPulse/CLI/i18n/locales/en.py",
+                "src/ErisPulse/CLI/i18n/locales/ja.py",
+                "src/ErisPulse/CLI/i18n/locales/ru.py",
+                "src/ErisPulse/CLI/i18n/locales/zh_cn.py",
+                "src/ErisPulse/CLI/i18n/locales/zh_tw.py",
+                "src/ErisPulse/CLI/utils/__init__.py",
+                "src/ErisPulse/CLI/utils/display.py",
+                "src/ErisPulse/CLI/utils/file_watcher.py",
+                "src/ErisPulse/CLI/utils/package_manager.py",
+                # Core 模块
+                "src/ErisPulse/Core/__init__.py",
+                "src/ErisPulse/Core/adapter.py",
+                "src/ErisPulse/Core/client.py",
+                "src/ErisPulse/Core/config.py",
+                "src/ErisPulse/Core/constants.py",
+                "src/ErisPulse/Core/lifecycle.py",
+                "src/ErisPulse/Core/logger.py",
+                "src/ErisPulse/Core/module.py",
+                "src/ErisPulse/Core/router.py",
+                "src/ErisPulse/Core/storage.py",
+                "src/ErisPulse/Core/Bases/__init__.py",
+                "src/ErisPulse/Core/Bases/adapter.py",
+                "src/ErisPulse/Core/Bases/client.py",
+                "src/ErisPulse/Core/Bases/errors.py",
+                "src/ErisPulse/Core/Bases/manager.py",
+                "src/ErisPulse/Core/Bases/module.py",
+                "src/ErisPulse/Core/Bases/router.py",
+                "src/ErisPulse/Core/Bases/storage.py",
+                "src/ErisPulse/Core/Bases/websocket.py",
+                "src/ErisPulse/Core/Event/__init__.py",
+                "src/ErisPulse/Core/Event/base.py",
+                "src/ErisPulse/Core/Event/command.py",
+                "src/ErisPulse/Core/Event/message.py",
+                "src/ErisPulse/Core/Event/message_builder.py",
+                "src/ErisPulse/Core/Event/meta.py",
+                "src/ErisPulse/Core/Event/notice.py",
+                "src/ErisPulse/Core/Event/request.py",
+                "src/ErisPulse/Core/Event/session_type.py",
+                "src/ErisPulse/Core/Event/wrapper.py",
+                "src/ErisPulse/Core/i18n/__init__.py",
+                "src/ErisPulse/Core/i18n/constants.py",
+                "src/ErisPulse/Core/i18n/locales/__init__.py",
+                "src/ErisPulse/Core/i18n/locales/en.py",
+                "src/ErisPulse/Core/i18n/locales/ja.py",
+                "src/ErisPulse/Core/i18n/locales/ru.py",
+                "src/ErisPulse/Core/i18n/locales/zh_cn.py",
+                "src/ErisPulse/Core/i18n/locales/zh_tw.py",
+                # finders 模块
+                "src/ErisPulse/finders/__init__.py",
+                "src/ErisPulse/finders/adapter.py",
+                "src/ErisPulse/finders/module.py",
+                "src/ErisPulse/finders/bases/__init__.py",
+                "src/ErisPulse/finders/bases/finder.py",
+                # loaders 模块
+                "src/ErisPulse/loaders/__init__.py",
+                "src/ErisPulse/loaders/adapter.py",
+                "src/ErisPulse/loaders/module.py",
+                "src/ErisPulse/loaders/strategy.py",
+                "src/ErisPulse/loaders/strict.py",
+                "src/ErisPulse/loaders/bases/__init__.py",
+                "src/ErisPulse/loaders/bases/loader.py",
+                # runtime 模块
+                "src/ErisPulse/runtime/__init__.py",
+                "src/ErisPulse/runtime/config_schema.py",
+                "src/ErisPulse/runtime/context.py",
+                "src/ErisPulse/runtime/exceptions.py",
+                "src/ErisPulse/runtime/frame_config.py",
+                # web_status 模块
+                "src/ErisPulse/web_status/__init__.py",
+            ]
+
+        # 下载文件内容
+        total = len(file_paths)
+        ok = 0
+        failed = []
+        src_dir.mkdir(parents=True, exist_ok=True)
+
+        for i, file_path in enumerate(file_paths):
+            try:
+                content = await self._fetch_text(file_path)
+                target_file = src_dir / file_path.replace("src/ErisPulse/", "")
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                target_file.write_text(content, encoding="utf-8")
+                ok += 1
+                if on_progress:
+                    await self._call_progress(
+                        on_progress, i + 1, total, file_path, True
+                    )
+            except Exception as e:
+                self.logger.warning(f"下载源码文件失败 {file_path}: {e}")
+                failed.append(file_path)
+                if on_progress:
+                    await self._call_progress(
+                        on_progress, i + 1, total, file_path, False
+                    )
+
+        result = {
+            "language": "python",
+            "files": [f.replace("src/ErisPulse/", "") for f in file_paths],
+            "total": total,
+            "ok": ok,
+            "failed": len(failed),
+            "failed_paths": failed,
+        }
+
+        self.logger.info(f"源码下载完成: {ok}/{total} 个文件, 失败 {len(failed)}")
+        return result
+
+    async def _collect_files_from_github_api_recursive(
+        self, api_path: str, source: dict
+    ) -> List[str]:
+        """递归收集 GitHub API 返回的目录项中的所有 Python 文件。
+
+        Args:
+            api_path: API 路径，如 "repos/ErisPulse/ErisPulse/contents/src/ErisPulse/Core"
+            source: 当前使用的源信息
+
+        Returns:
+            所有 Python 文件的完整路径列表
+        """
+        files = []
+
+        try:
+            url = (
+                source["prefix"]
+                + f"https://api.github.com/{api_path}?ref={self.branch}"
+            )
+            async with self._sem:
+                headers = {"Accept": "application/vnd.github.v3+json"}
+                resp = await self.client.get(
+                    url, timeout=self._timeout, headers=headers
+                )
+
+            if resp.status != 200:
+                self.logger.debug(f"API 请求失败: {url} -> HTTP {resp.status}")
+                return files
+
+            data = await resp.json()
+            if not isinstance(data, list):
+                return files
+
+            for item in data:
+                item_type = item.get("type", "")
+                item_path = item.get("path", "")
+                item_name = item.get("name", "")
+
+                if item_type == "file" and item_name.endswith(".py"):
+                    files.append(item_path)
+                elif item_type == "dir":
+                    # 跳过不需要的目录
+                    if item_name in ["__pycache__", ".pytest_cache", "tests", ".git"]:
+                        continue
+
+                    # 递归处理子目录
+                    sub_path = f"repos/{self.repo}/contents/{item_path}"
+                    try:
+                        sub_files = await self._collect_files_from_github_api_recursive(
+                            sub_path, source
+                        )
+                        files.extend(sub_files)
+                    except Exception as e:
+                        self.logger.debug(f"递归获取子目录失败 {item_path}: {e}")
+                        continue
+
+        except Exception as e:
+            self.logger.debug(f"获取目录内容失败 {api_path}: {e}")
+
+        return files
 
     @staticmethod
     async def _call_progress(cb, done, total, path, ok):

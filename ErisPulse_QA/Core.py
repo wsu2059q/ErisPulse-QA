@@ -65,10 +65,23 @@ class Main(BaseModule):
         def list_documents(args: dict) -> str:
             return kb.list_documents()
 
+        def list_source_files(args: dict) -> str:
+            """列出所有可用的 ErisPulse 源码文件。"""
+            return kb.list_source_files()
+
+        def read_source_file(args: dict) -> str:
+            """读取指定的 ErisPulse 源码文件内容。"""
+            file_path = (args.get("file_path") or "").strip()
+            if not file_path:
+                return "file_path 不能为空。"
+            return kb.read_source_file(file_path)
+
         return {
             "search_docs": search_docs,
             "read_document": read_document,
             "list_documents": list_documents,
+            "list_source_files": list_source_files,
+            "read_source_file": read_source_file,
         }
 
     @staticmethod
@@ -330,6 +343,8 @@ class Main(BaseModule):
                 on_tool_call=on_tool_call,
                 supports_markdown=reply.supports_markdown,
                 history=history,
+                version=self.kb.source_version,
+                source_files_text=self.kb.source_files_text(),
             )
         except Exception as e:
             self.logger.error(f"LLM 回答失败: {e}")
@@ -371,6 +386,8 @@ class Main(BaseModule):
                 doc_index,
                 supports_markdown=reply.supports_markdown,
                 history=history,
+                version=self.kb.source_version,
+                source_files_text=self.kb.source_files_text(),
             ):
                 if evt_type == "thinking":
                     await reply.stream_write(f"- {payload}", newline=True)
@@ -425,7 +442,7 @@ class Main(BaseModule):
             return
         self._building = True
         start = time.time()
-        await event.reply("开始更新文档缓存，过程较久请耐心等待…")
+        await event.reply("开始更新文档缓存和源码，过程较久请耐心等待…")
         try:
             last_report = [time.time()]
 
@@ -439,21 +456,52 @@ class Main(BaseModule):
                     except Exception:
                         pass
 
+            # 1. 获取版本信息
+            await event.reply("正在获取 ErisPulse 版本信息…")
+            version = await self.docs_loader.get_version()
+
+            # 2. 更新文档缓存
+            await event.reply("开始下载文档…")
             await self.kb.rebuild(self.docs_loader, on_progress=on_progress)
+
+            # 3. 下载源码
+            await event.reply("开始下载源码…")
+            last_report_src = [time.time()]
+
+            async def on_src_progress(done, total, path, ok):
+                now = time.time()
+                if done == total or now - last_report_src[0] > 5:
+                    last_report_src[0] = now
+                    pct = (done / total * 100) if total else 0
+                    try:
+                        await event.reply(f"下载源码进度: {done}/{total} ({pct:.0f}%)")
+                    except Exception:
+                        pass
+
+            src_result = await self.docs_loader.download_source_code(
+                self.kb.src_dir, on_progress=on_src_progress
+            )
+
+            # 4. 更新知识库的源码信息
+            self.kb.set_source_info(version, src_result.get("files", []))
+
             info = self.kb.info()
             stats = info.get("stats", {})
             cost = time.time() - start
             await event.reply(
-                "文档缓存更新完成！\n"
+                f"文档缓存和源码更新完成！\n"
+                f"- ErisPulse 版本: {version}\n"
                 f"- 文档: {stats.get('doc_ok', 0)}/{stats.get('doc_total', 0)} 篇"
                 f"（失败 {stats.get('doc_failed', 0)}）\n"
                 f"- 知识块: {info.get('chunk_count', 0)} 个\n"
+                f"- 源码文件: {src_result.get('ok', 0)}/{src_result.get('total', 0)} 个"
+                f"（失败 {src_result.get('failed', 0)}）\n"
                 f"- 检索: 本地 BM25\n"
                 f"- 耗时: {cost:.1f}s"
             )
         except Exception as e:
-            self.logger.error(f"更新文档缓存失败: {e}")
-            await event.reply(f"更新文档缓存失败: {e}")
+            self.logger.error(f"更新文档缓存和源码失败: {e}")
+            await event.reply(f"更新文档缓存和源码失败: {e}")
         finally:
             self._building = False
 
